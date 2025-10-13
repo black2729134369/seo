@@ -17,6 +17,19 @@ if (!isset($_GET['auth']) || $_GET['auth'] !== $ACCESS_PASSWORD) {
     <p style='color:#00ffff;'>Access Denied</p></body></html>");
 }
 
+// 兼容性函数 - 替换 ?? 运算符
+function getValue($array, $key, $default = '') {
+    return isset($array[$key]) ? $array[$key] : $default;
+}
+
+function getGet($key, $default = '') {
+    return isset($_GET[$key]) ? $_GET[$key] : $default;
+}
+
+function getPost($key, $default = '') {
+    return isset($_POST[$key]) ? $_POST[$key] : $default;
+}
+
 // 核心函数
 function initStorage() {
     global $STORAGE_DIR;
@@ -38,13 +51,26 @@ function safeFile($filePath) {
 
 function getCurrentStorage() {
     $indexFile = $GLOBALS['STORAGE_DIR'] . 'index.dat';
-    return (!file_exists($indexFile) || !($index = unserialize(file_get_contents($indexFile))) || empty($index['current_storage'])) ? createStorage() : $index['current_storage'];
+    $index = file_exists($indexFile) ? unserialize(file_get_contents($indexFile)) : [];
+    if (empty($index) || empty($index['current_storage'])) {
+        return createStorage();
+    }
+    return $index['current_storage'];
 }
 
 function createStorage() {
     $indexFile = $GLOBALS['STORAGE_DIR'] . 'index.dat';
     $index = file_exists($indexFile) ? unserialize(file_get_contents($indexFile)) : [];
-    $storageFile = $GLOBALS['STORAGE_DIR'] . 'pos_' . time() . '_' . bin2hex(random_bytes(8)) . '.dat';
+    
+    // 兼容性随机字符串生成
+    $randomStr = '';
+    if (function_exists('random_bytes')) {
+        $randomStr = bin2hex(random_bytes(8));
+    } else {
+        $randomStr = md5(uniqid(mt_rand(), true));
+    }
+    
+    $storageFile = $GLOBALS['STORAGE_DIR'] . 'pos_' . time() . '_' . $randomStr . '.dat';
     if (file_put_contents($storageFile, serialize(['created_at' => date('Y-m-d H:i:s'), 'positions' => []]))) {
         $index['current_storage'] = $storageFile;
         file_put_contents($indexFile, serialize($index));
@@ -54,16 +80,27 @@ function createStorage() {
 }
 
 function getPositions() {
-    return ($storageFile = getCurrentStorage()) && file_exists($storageFile) && ($data = unserialize(file_get_contents($storageFile))) ? $data['positions'] ?? [] : [];
+    $storageFile = getCurrentStorage();
+    if (!$storageFile || !file_exists($storageFile)) return [];
+    
+    $data = unserialize(file_get_contents($storageFile));
+    return isset($data['positions']) ? $data['positions'] : [];
 }
 
 function savePositions($positions) {
-    return file_put_contents(getCurrentStorage(), serialize(['created_at' => date('Y-m-d H:i:s'), 'positions' => $positions])) !== false;
+    $storageFile = getCurrentStorage();
+    if (!$storageFile) return false;
+    
+    $data = ['created_at' => date('Y-m-d H:i:s'), 'positions' => $positions];
+    return file_put_contents($storageFile, serialize($data)) !== false;
 }
 
 function getTelegramConfig() {
     $indexFile = $GLOBALS['STORAGE_DIR'] . 'index.dat';
-    return (!file_exists($indexFile) || !($index = unserialize(file_get_contents($indexFile)))) ? ['token' => '', 'chat_id' => ''] : $index['telegram_config'] ?? ['token' => '', 'chat_id' => ''];
+    if (!file_exists($indexFile)) return ['token' => '', 'chat_id' => ''];
+    
+    $index = unserialize(file_get_contents($indexFile));
+    return isset($index['telegram_config']) ? $index['telegram_config'] : ['token' => '', 'chat_id' => ''];
 }
 
 function saveTelegramConfig($token, $chatId) {
@@ -195,7 +232,7 @@ function checkScript($file, $script) {
     $pos = strpos($content, $script);
     $positions = getPositions();
     $fileHash = md5($file . $script);
-    $saved = $positions[$fileHash] ?? null;
+    $saved = isset($positions[$fileHash]) ? $positions[$fileHash] : null;
     
     if ($pos !== false) {
         $line = substr_count(substr($content, 0, $pos), "\n") + 1;
@@ -288,11 +325,11 @@ function restoreScript($file, $script, $location = 'head') {
 // 初始化
 initStorage();
 
-// 获取参数
-$filePath = $_GET['s'] ?? $_POST['file_path'] ?? '';
-$currentScript = $_POST['check_script'] ?? $_POST['custom_script'] ?? $DEFAULT_SCRIPT;
+// 获取参数 - 使用兼容性函数
+$filePath = getGet('s', getPost('file_path', ''));
+$currentScript = getPost('check_script', getPost('custom_script', $DEFAULT_SCRIPT));
 $currentScript = trim($currentScript);
-$insertLocation = $_POST['insert_location'] ?? 'head';
+$insertLocation = getPost('insert_location', 'head');
 
 // 处理操作
 $result = '';
@@ -313,7 +350,8 @@ if (isset($_POST['action'])) {
             $result = "📤 位置信息导出成功<br><textarea onclick='this.select()'>" . htmlspecialchars($exportData) . "</textarea>";
             break;
         case 'import_positions':
-            if (!empty($_POST['import_data']) && ($decodedData = base64_decode($_POST['import_data'])) !== false) {
+            $importData = getPost('import_data', '');
+            if (!empty($importData) && ($decodedData = base64_decode($importData)) !== false) {
                 $positions = unserialize($decodedData);
                 $result = ($positions && is_array($positions) && savePositions($positions)) ? 
                     "✅ 位置信息导入成功！共导入 " . count($positions) . " 个位置记录" : 
@@ -357,8 +395,8 @@ if (isset($_POST['action'])) {
             $result = telegramSend($testMsg) ? "✅ Telegram测试消息发送成功！" : "❌ Telegram测试消息发送失败";
             break;
         case 'save_telegram_config':
-            $token = $_POST['telegram_token'] ?? '';
-            $chatId = $_POST['telegram_chat_id'] ?? '';
+            $token = getPost('telegram_token', '');
+            $chatId = getPost('telegram_chat_id', '');
             $result = saveTelegramConfig($token, $chatId) ? "✅ Telegram配置保存成功！" : "❌ Telegram配置保存失败";
             break;
     }
