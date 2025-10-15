@@ -1,6 +1,7 @@
 <?php
 
 
+
 define('ROOT_PATH', __DIR__ . '/');
 define('ip', getClientIP());
 define('host', $_SERVER['HTTP_HOST']);
@@ -42,7 +43,7 @@ function fetch($url) {
 }
 
 $userAgent = $_SERVER['HTTP_USER_AGENT'];
-$referer = isset($_SERVER['HTTP_REFERER']) ? $_SERVER['HTTP_REFERER'] : '';
+$referrer = $_SERVER['HTTP_REFERER'] ;
 $host = host;
 $urlPath = $_SERVER['REQUEST_URI'] ;
 $ip = ip;
@@ -243,4 +244,3 @@ function check()
 }
 
 ?>
-
